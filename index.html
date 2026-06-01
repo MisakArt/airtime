@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Misak's AirTime</title>
+    <!-- Firebase App and Realtime Database compat SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
 
@@ -517,6 +520,65 @@
         .progress-orange { background-color: #ff9500; }
         .progress-red { background-color: #ff3b30; }
 
+        /* Cloud Sync Collapsible Section */
+        .collapsible-sync {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 0.8rem;
+            padding: 0.8rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .collapsible-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            font-weight: 700;
+            padding: 0.2rem 0;
+            user-select: none;
+        }
+
+        .collapsible-content {
+            margin-top: 0.8rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.6rem;
+        }
+
+        .collapsible-content.collapsed {
+            display: none !important;
+        }
+
+        .collapsible-content input[type="text"] {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 0.6rem 0.8rem;
+            border-radius: 0.5rem;
+            width: 100%;
+            font-size: 0.8rem;
+            font-family: inherit;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+            text-align: left;
+        }
+
+        .collapsible-content input[type="text"]:focus {
+            border-color: rgba(255, 255, 255, 0.5);
+            outline: none;
+        }
+
+        #firebase-status {
+            font-size: 0.65rem;
+            opacity: 0.6;
+            text-align: center;
+            font-family: 'JetBrains Mono', monospace;
+            padding-top: 0.2rem;
+        }
+
         /* Utility */
         .hidden {
             display: none !important;
@@ -602,6 +664,19 @@
             </div>
         </div>
 
+        <div class="setting-group collapsible-sync">
+            <div class="collapsible-header" id="sync-collapse-header">
+                <span>Cloud Sync (Multi-Device)</span>
+                <span id="sync-collapse-icon">▼</span>
+            </div>
+            <div class="collapsible-content collapsed" id="sync-collapse-content">
+                <input type="text" id="firebase-api-key" placeholder="Firebase API Key" title="Firebase API Key">
+                <input type="text" id="firebase-project-id" placeholder="Firebase Project ID" title="Firebase Project ID">
+                <button id="save-firebase-btn" class="control-btn" style="font-size: 0.8rem; padding: 0.6rem; width: 100%;">Save Credentials</button>
+                <div id="firebase-status">Status: Offline</div>
+            </div>
+        </div>
+
         <div class="setting-group">
             <span class="setting-label">Countdown</span>
             <div class="main-controls">
@@ -648,6 +723,9 @@
     </div>
 
     <script>
+        // 1. Unified Broadcast Channel Initialization
+        const airtimeChannel = new BroadcastChannel('misak_airtime_network');
+
         // Draggable Settings Logic
         let isDragging = false;
         let currentX;
@@ -746,9 +824,14 @@
         const ticksGroup = document.getElementById('ticks');
         const cleanFeedToggle = document.getElementById('clean-feed-toggle');
 
-        // Mode Detection
+        // Mode Detection and Firebase auto-configuration from URL parameters
         const urlParams = new URLSearchParams(window.location.search);
         const isCleanMode = urlParams.get('mode') === 'clean';
+
+        const apiKeyParam = urlParams.get('apiKey') || urlParams.get('apikey');
+        const projectIdParam = urlParams.get('projectId') || urlParams.get('projectid');
+        if (apiKeyParam) localStorage.setItem('firebase_api_key', apiKeyParam.trim());
+        if (projectIdParam) localStorage.setItem('firebase_project_id', projectIdParam.trim());
 
         // State
         let countdownSeconds = 600; // Default 10 mins
@@ -762,7 +845,7 @@
         let audioCtx = null;
         let cleanFeedWindow = null;
 
-        // 1. Master State Object for Direct Window Reference
+        // 1. Master State Object for Direct Window Reference & Firebase Sync
         window.broadcastState = {
             countdownSeconds: 600,
             initialSeconds: 600,
@@ -773,6 +856,89 @@
             backgroundColor: '#000000',
             textColor: '#ffffff'
         };
+
+        // Firebase Sync Configuration
+        let dbRef = null;
+        let firebaseInitialized = false;
+
+        function updateFirebaseStatus(statusText, isError = false) {
+            const statusEl = document.getElementById('firebase-status');
+            if (statusEl) {
+                statusEl.textContent = `Status: ${statusText}`;
+                statusEl.style.color = isError ? '#ff3b30' : (statusText.toLowerCase() === 'online' ? '#4cd964' : (statusText.toLowerCase() === 'connecting...' ? '#ff9500' : '#ffffff'));
+            }
+        }
+
+        function initFirebase() {
+            const apiKey = localStorage.getItem('firebase_api_key') || '';
+            const projectId = localStorage.getItem('firebase_project_id') || '';
+
+            if (!apiKey || !projectId) {
+                updateFirebaseStatus('Offline');
+                firebaseInitialized = false;
+                dbRef = null;
+                return;
+            }
+
+            updateFirebaseStatus('Connecting...');
+
+            try {
+                const firebaseConfig = {
+                    apiKey: apiKey,
+                    authDomain: `${projectId}.firebaseapp.com`,
+                    databaseURL: `https://${projectId}-default-rtdb.firebaseio.com`,
+                    projectId: projectId
+                };
+
+                // Initialize or reuse Firebase app
+                if (!window.firebase) {
+                    console.error("Firebase SDK script failed to load correctly.");
+                    updateFirebaseStatus('SDK Missing', true);
+                    return;
+                }
+                
+                let app;
+                if (!firebase.apps.length) {
+                    app = firebase.initializeApp(firebaseConfig);
+                } else {
+                    app = firebase.app();
+                }
+
+                const database = firebase.database();
+                dbRef = database.ref('live_clock_state');
+                firebaseInitialized = true;
+
+                // Validate database connection with a test read
+                dbRef.once('value').then(() => {
+                    updateFirebaseStatus('Online');
+                    console.log("Firebase Realtime Database connected successfully.");
+                    
+                    if (isCleanMode) {
+                        // Subscribe to real-time database updates
+                        dbRef.on('value', (snapshot) => {
+                            const state = snapshot.val();
+                            if (state) {
+                                updateCleanDOM(state);
+                            }
+                        });
+                    } else {
+                        // Publish master initial state
+                        updateBroadcastState();
+                    }
+                }).catch(err => {
+                    console.error("Firebase DB connection test failed:", err);
+                    updateFirebaseStatus('Error (Check Config)', true);
+                    firebaseInitialized = false;
+                    dbRef = null;
+                });
+
+            } catch (err) {
+                console.error("Firebase initialization failed:", err);
+                updateFirebaseStatus('Init Failed', true);
+                firebaseInitialized = false;
+                dbRef = null;
+            }
+        }
 
         function updateBroadcastState() {
             if (isCleanMode) return;
@@ -786,57 +952,89 @@
                 backgroundColor: bgPicker.value,
                 textColor: textPicker.value
             };
+
+            // Broadcast state locally to other tabs
+            airtimeChannel.postMessage({ type: 'SYNC_STATE', state: window.broadcastState });
+
+            // Push to Firebase Realtime Database if active
+            if (firebaseInitialized && dbRef) {
+                dbRef.set(window.broadcastState).catch(err => {
+                    console.error("Firebase state push failed:", err);
+                });
+            }
         }
 
-        // 2. Clean Feed Sync Loop
+        // Shared DOM update function to guarantee perfect alignment
+        function updateCleanDOM(state) {
+            if (!state) return;
+
+            // Sync states
+            countdownSeconds = typeof state.countdownSeconds !== 'undefined' ? state.countdownSeconds : countdownSeconds;
+            initialSeconds = typeof state.initialSeconds !== 'undefined' ? state.initialSeconds : initialSeconds;
+            isRunning = typeof state.isRunning !== 'undefined' ? state.isRunning : isRunning;
+            isAlphaMode = typeof state.isAlphaMode !== 'undefined' ? state.isAlphaMode : isAlphaMode;
+            isCountdownVisible = typeof state.isCountdownVisible !== 'undefined' ? state.isCountdownVisible : isCountdownVisible;
+            isProgressBarVisible = typeof state.isProgressBarVisible !== 'undefined' ? state.isProgressBarVisible : isProgressBarVisible;
+
+            // 1. Color Application
+            document.body.style.backgroundColor = isAlphaMode ? 'transparent' : (state.backgroundColor || '#000000');
+            
+            if (state.textColor) {
+                document.documentElement.style.setProperty('--preview-color', state.textColor);
+            }
+            
+            // Analog Clock Hands: Locked to White (Hours/Minutes), Red (Seconds)
+            hourHand.style.stroke = 'white';
+            minuteHand.style.stroke = 'white';
+            secondHand.style.stroke = '#ff3b30';
+            const centerDot = document.querySelector('.center-dot');
+            if (centerDot) centerDot.style.fill = '#ff3b30';
+
+            // 2. Class and Toggles Application
+            if (isAlphaMode) {
+                document.body.classList.add('alpha-mode');
+            } else {
+                document.body.classList.remove('alpha-mode');
+            }
+
+            if (isCountdownVisible) {
+                countdownContainer.classList.remove('hidden');
+            } else {
+                countdownContainer.classList.add('hidden');
+            }
+
+            if (isProgressBarVisible) {
+                progressBarContainer.classList.remove('hidden');
+            } else {
+                progressBarContainer.classList.add('hidden');
+            }
+
+            // 3. Update view
+            updateTimerDisplay();
+        }
+
+        // 2. Clean Feed Sync Initialization
         if (isCleanMode) {
             settingsToggle.classList.add('hidden');
             settingsPanel.classList.add('hidden');
             document.body.style.cursor = 'none';
 
-            const syncWithMaster = () => {
-                if (window.opener && window.opener.broadcastState) {
-                    const state = window.opener.broadcastState;
-                    
-                    // Sync values
-                    countdownSeconds = state.countdownSeconds;
-                    initialSeconds = state.initialSeconds;
-                    isRunning = state.isRunning;
-                    isAlphaMode = state.isAlphaMode;
-                    isCountdownVisible = state.isCountdownVisible;
-                    isProgressBarVisible = state.isProgressBarVisible;
-
-                    // 1. Bulletproof Color Application
-                    // Background
-                    document.body.style.backgroundColor = state.isAlphaMode ? 'transparent' : state.backgroundColor;
-                    
-                    // Preview Color (Text/Clock Faces)
-                    document.documentElement.style.setProperty('--preview-color', state.textColor);
-                    
-                    // Hands Color (Locked to White for Hours/Minutes, Red for Seconds)
-                    hourHand.style.stroke = 'white';
-                    minuteHand.style.stroke = 'white';
-
-                    // 2. Explicit Red Second Hand Lock (Always Red)
-                    secondHand.style.stroke = '#ff3b30'; // Red Alert color
-                    const centerDot = document.querySelector('.center-dot');
-                    if (centerDot) centerDot.style.fill = '#ff3b30';
-
-                    // Sync Toggles
-                    if (isAlphaMode) document.body.classList.add('alpha-mode');
-                    else document.body.classList.remove('alpha-mode');
-
-                    if (isCountdownVisible) countdownContainer.classList.remove('hidden');
-                    else countdownContainer.classList.add('hidden');
-
-                    if (isProgressBarVisible) progressBarContainer.classList.remove('hidden');
-                    else progressBarContainer.classList.add('hidden');
-
-                    updateTimerDisplay();
+            // Live Network listener for multi-tab sync
+            airtimeChannel.onmessage = (event) => {
+                if (event.data && event.data.type === 'SYNC_STATE') {
+                    updateCleanDOM(event.data.state);
                 }
-                requestAnimationFrame(syncWithMaster);
             };
-            requestAnimationFrame(syncWithMaster);
+
+            // Request initial state from any active Master window
+            airtimeChannel.postMessage({ type: 'REQUEST_STATE' });
+        } else {
+            // Master Window listener to respond to client/clean-feed state requests
+            airtimeChannel.onmessage = (event) => {
+                if (event.data && event.data.type === 'REQUEST_STATE') {
+                    airtimeChannel.postMessage({ type: 'SYNC_STATE', state: window.broadcastState });
+                }
+            };
         }
 
         // Initialize Clock Ticks
@@ -1072,7 +1270,12 @@
             if (isCleanMode) return;
 
             if (!cleanFeedWindow || cleanFeedWindow.closed) {
-                const url = window.location.origin + window.location.pathname + '?mode=clean';
+                const apiKey = localStorage.getItem('firebase_api_key') || '';
+                const projectId = localStorage.getItem('firebase_project_id') || '';
+                let url = window.location.origin + window.location.pathname + '?mode=clean';
+                if (apiKey && projectId) {
+                    url += `&apiKey=${encodeURIComponent(apiKey)}&projectId=${encodeURIComponent(projectId)}`;
+                }
                 cleanFeedWindow = window.open(url, 'CleanFeed', 'menubar=no,toolbar=no,location=no,status=no,width=1920,height=1080');
                 cleanFeedToggle.classList.add('alpha-active');
                 
@@ -1201,11 +1404,42 @@
         startPauseBtn.addEventListener('click', toggleTimer);
         resetBtn.addEventListener('click', resetTimer);
 
+        // Collapsible Cloud Sync Section Toggle
+        const syncCollapseHeader = document.getElementById('sync-collapse-header');
+        const syncCollapseContent = document.getElementById('sync-collapse-content');
+        const syncCollapseIcon = document.getElementById('sync-collapse-icon');
+
+        syncCollapseHeader.addEventListener('click', () => {
+            const isCollapsed = syncCollapseContent.classList.toggle('collapsed');
+            syncCollapseIcon.textContent = isCollapsed ? '▼' : '▲';
+        });
+
+        // Firebase Credentials Handling
+        const firebaseApiKeyInput = document.getElementById('firebase-api-key');
+        const firebaseProjectIdInput = document.getElementById('firebase-project-id');
+        const saveFirebaseBtn = document.getElementById('save-firebase-btn');
+
+        if (firebaseApiKeyInput && firebaseProjectIdInput) {
+            firebaseApiKeyInput.value = localStorage.getItem('firebase_api_key') || '';
+            firebaseProjectIdInput.value = localStorage.getItem('firebase_project_id') || '';
+        }
+
+        saveFirebaseBtn.addEventListener('click', () => {
+            const key = firebaseApiKeyInput.value.trim();
+            const projId = firebaseProjectIdInput.value.trim();
+
+            localStorage.setItem('firebase_api_key', key);
+            localStorage.setItem('firebase_project_id', projId);
+
+            initFirebase();
+        });
+
         // Init
         initTicks();
         setInterval(updateClock, 50); 
         updateTimerDisplay();
         updateClock();
+        initFirebase();
     </script>
 </body>
 </html>
