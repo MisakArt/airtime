@@ -4,9 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Misak's AirTime</title>
-    <!-- Firebase App and Realtime Database compat SDKs -->
-    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;900&family=JetBrains+Mono:wght@500;700&display=swap');
 
@@ -125,7 +122,7 @@
         .hand {
             stroke-linecap: round;
             transform-origin: 50px 50px;
-            transition: transform 0.1s cubic-bezier(0.1, 2.7, 0.58, 1);
+            will-change: transform;
         }
 
         .hour-hand {
@@ -141,7 +138,6 @@
         .second-hand {
             stroke: var(--alert-red);
             stroke-width: 1;
-            transition: transform 0.05s linear;
         }
 
         .center-dot {
@@ -492,7 +488,7 @@
             bottom: 0;
             left: 0;
             width: 100%;
-            height: 18px;
+            height: 20px;
             background: rgba(255, 255, 255, 0.1);
             z-index: 1000;
             transition: opacity 0.3s;
@@ -520,63 +516,15 @@
         .progress-orange { background-color: #ff9500; }
         .progress-red { background-color: #ff3b30; }
 
-        /* Cloud Sync Collapsible Section */
-        .collapsible-sync {
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 0.8rem;
-            padding: 0.8rem;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .collapsible-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            cursor: pointer;
-            font-size: 0.75rem;
-            text-transform: uppercase;
-            letter-spacing: 0.1em;
-            font-weight: 700;
-            padding: 0.2rem 0;
-            user-select: none;
-        }
-
-        .collapsible-content {
-            margin-top: 0.8rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.6rem;
-        }
-
-        .collapsible-content.collapsed {
+        /* Countdown Only Mode: hide clocks, enlarge countdown */
+        body.countdown-only .analog-container,
+        body.countdown-only .digital-clock {
             display: none !important;
         }
 
-        .collapsible-content input[type="text"] {
-            background: rgba(255, 255, 255, 0.1);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            color: white;
-            padding: 0.6rem 0.8rem;
-            border-radius: 0.5rem;
-            width: 100%;
-            font-size: 0.8rem;
-            font-family: inherit;
-            box-sizing: border-box;
-            transition: border-color 0.2s;
-            text-align: left;
-        }
-
-        .collapsible-content input[type="text"]:focus {
-            border-color: rgba(255, 255, 255, 0.5);
-            outline: none;
-        }
-
-        #firebase-status {
-            font-size: 0.65rem;
-            opacity: 0.6;
+        body.countdown-only .info-container {
+            align-items: center;
             text-align: center;
-            font-family: 'JetBrains Mono', monospace;
-            padding-top: 0.2rem;
         }
 
         /* Utility */
@@ -627,6 +575,8 @@
                 <button class="preset-btn" onclick="setTimer(5)">5m</button>
                 <button class="preset-btn" onclick="setTimer(10)">10m</button>
                 <button class="preset-btn" onclick="setTimer(15)">15m</button>
+                <button class="preset-btn" onclick="setTimer(30)">30m</button>
+                <button class="preset-btn" onclick="setTimer(60)">60m</button>
             </div>
         </div>
 
@@ -646,6 +596,10 @@
                 <span>Show Countdown</span>
                 <div class="toggle-switch"></div>
             </div>
+            <div class="alpha-toggle" id="countdown-only-toggle">
+                <span>Countdown Only (Hide Clocks)</span>
+                <div class="toggle-switch"></div>
+            </div>
             <div class="alpha-toggle" id="progress-bar-toggle">
                 <span>Show Progress Bar</span>
                 <div class="toggle-switch"></div>
@@ -661,19 +615,6 @@
             <div class="alpha-toggle" id="sound-toggle">
                 <span>Sound Alerts</span>
                 <div class="toggle-switch"></div>
-            </div>
-        </div>
-
-        <div class="setting-group collapsible-sync">
-            <div class="collapsible-header" id="sync-collapse-header">
-                <span>Cloud Sync (Multi-Device)</span>
-                <span id="sync-collapse-icon">▼</span>
-            </div>
-            <div class="collapsible-content collapsed" id="sync-collapse-content">
-                <input type="text" id="firebase-api-key" placeholder="Firebase API Key" title="Firebase API Key">
-                <input type="text" id="firebase-project-id" placeholder="Firebase Project ID" title="Firebase Project ID">
-                <button id="save-firebase-btn" class="control-btn" style="font-size: 0.8rem; padding: 0.6rem; width: 100%;">Save Credentials</button>
-                <div id="firebase-status">Status: Offline</div>
             </div>
         </div>
 
@@ -723,6 +664,9 @@
     </div>
 
     <script>
+        // Snapshot of the untouched page, used to build the Clean Feed window
+        const PAGE_SOURCE = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+
         // 1. Unified Broadcast Channel Initialization
         const airtimeChannel = new BroadcastChannel('misak_airtime_network');
 
@@ -823,15 +767,11 @@
         const adjPlusBtn = document.getElementById('adj-plus-btn');
         const ticksGroup = document.getElementById('ticks');
         const cleanFeedToggle = document.getElementById('clean-feed-toggle');
+        const countdownOnlyToggle = document.getElementById('countdown-only-toggle');
 
-        // Mode Detection and Firebase auto-configuration from URL parameters
+        // Mode Detection
         const urlParams = new URLSearchParams(window.location.search);
-        const isCleanMode = urlParams.get('mode') === 'clean';
-
-        const apiKeyParam = urlParams.get('apiKey') || urlParams.get('apikey');
-        const projectIdParam = urlParams.get('projectId') || urlParams.get('projectid');
-        if (apiKeyParam) localStorage.setItem('firebase_api_key', apiKeyParam.trim());
-        if (projectIdParam) localStorage.setItem('firebase_project_id', projectIdParam.trim());
+        const isCleanMode = urlParams.get('mode') === 'clean' || window.__AIRTIME_CLEAN__ === true;
 
         // State
         let countdownSeconds = 600; // Default 10 mins
@@ -841,11 +781,12 @@
         let isAlphaMode = false;
         let isCountdownVisible = true;
         let isProgressBarVisible = false;
+        let isCountdownOnly = false;
         let isSoundEnabled = false;
         let audioCtx = null;
         let cleanFeedWindow = null;
 
-        // 1. Master State Object for Direct Window Reference & Firebase Sync
+        // 1. Master State Object for Direct Window Reference
         window.broadcastState = {
             countdownSeconds: 600,
             initialSeconds: 600,
@@ -853,92 +794,10 @@
             isAlphaMode: false,
             isCountdownVisible: true,
             isProgressBarVisible: false,
+            isCountdownOnly: false,
             backgroundColor: '#000000',
             textColor: '#ffffff'
         };
-
-        // Firebase Sync Configuration
-        let dbRef = null;
-        let firebaseInitialized = false;
-
-        function updateFirebaseStatus(statusText, isError = false) {
-            const statusEl = document.getElementById('firebase-status');
-            if (statusEl) {
-                statusEl.textContent = `Status: ${statusText}`;
-                statusEl.style.color = isError ? '#ff3b30' : (statusText.toLowerCase() === 'online' ? '#4cd964' : (statusText.toLowerCase() === 'connecting...' ? '#ff9500' : '#ffffff'));
-            }
-        }
-
-        function initFirebase() {
-            const apiKey = localStorage.getItem('firebase_api_key') || '';
-            const projectId = localStorage.getItem('firebase_project_id') || '';
-
-            if (!apiKey || !projectId) {
-                updateFirebaseStatus('Offline');
-                firebaseInitialized = false;
-                dbRef = null;
-                return;
-            }
-
-            updateFirebaseStatus('Connecting...');
-
-            try {
-                const firebaseConfig = {
-                    apiKey: apiKey,
-                    authDomain: `${projectId}.firebaseapp.com`,
-                    databaseURL: `https://${projectId}-default-rtdb.firebaseio.com`,
-                    projectId: projectId
-                };
-
-                // Initialize or reuse Firebase app
-                if (!window.firebase) {
-                    console.error("Firebase SDK script failed to load correctly.");
-                    updateFirebaseStatus('SDK Missing', true);
-                    return;
-                }
-                
-                let app;
-                if (!firebase.apps.length) {
-                    app = firebase.initializeApp(firebaseConfig);
-                } else {
-                    app = firebase.app();
-                }
-
-                const database = firebase.database();
-                dbRef = database.ref('live_clock_state');
-                firebaseInitialized = true;
-
-                // Validate database connection with a test read
-                dbRef.once('value').then(() => {
-                    updateFirebaseStatus('Online');
-                    console.log("Firebase Realtime Database connected successfully.");
-                    
-                    if (isCleanMode) {
-                        // Subscribe to real-time database updates
-                        dbRef.on('value', (snapshot) => {
-                            const state = snapshot.val();
-                            if (state) {
-                                updateCleanDOM(state);
-                            }
-                        });
-                    } else {
-                        // Publish master initial state
-                        updateBroadcastState();
-                    }
-                }).catch(err => {
-                    console.error("Firebase DB connection test failed:", err);
-                    updateFirebaseStatus('Error (Check Config)', true);
-                    firebaseInitialized = false;
-                    dbRef = null;
-                });
-
-            } catch (err) {
-                console.error("Firebase initialization failed:", err);
-                updateFirebaseStatus('Init Failed', true);
-                firebaseInitialized = false;
-                dbRef = null;
-            }
-        }
 
         function updateBroadcastState() {
             if (isCleanMode) return;
@@ -949,6 +808,7 @@
                 isAlphaMode,
                 isCountdownVisible,
                 isProgressBarVisible,
+                isCountdownOnly,
                 backgroundColor: bgPicker.value,
                 textColor: textPicker.value
             };
@@ -956,11 +816,9 @@
             // Broadcast state locally to other tabs
             airtimeChannel.postMessage({ type: 'SYNC_STATE', state: window.broadcastState });
 
-            // Push to Firebase Realtime Database if active
-            if (firebaseInitialized && dbRef) {
-                dbRef.set(window.broadcastState).catch(err => {
-                    console.error("Firebase state push failed:", err);
-                });
+            // Send state directly to the Clean Feed window (works even where BroadcastChannel can't)
+            if (cleanFeedWindow && !cleanFeedWindow.closed) {
+                cleanFeedWindow.postMessage({ type: 'SYNC_STATE', state: window.broadcastState }, '*');
             }
         }
 
@@ -975,6 +833,7 @@
             isAlphaMode = typeof state.isAlphaMode !== 'undefined' ? state.isAlphaMode : isAlphaMode;
             isCountdownVisible = typeof state.isCountdownVisible !== 'undefined' ? state.isCountdownVisible : isCountdownVisible;
             isProgressBarVisible = typeof state.isProgressBarVisible !== 'undefined' ? state.isProgressBarVisible : isProgressBarVisible;
+            isCountdownOnly = typeof state.isCountdownOnly !== 'undefined' ? state.isCountdownOnly : isCountdownOnly;
 
             // 1. Color Application
             document.body.style.backgroundColor = isAlphaMode ? 'transparent' : (state.backgroundColor || '#000000');
@@ -1009,6 +868,8 @@
                 progressBarContainer.classList.add('hidden');
             }
 
+            document.body.classList.toggle('countdown-only', isCountdownOnly);
+
             // 3. Update view
             updateTimerDisplay();
         }
@@ -1026,8 +887,18 @@
                 }
             };
 
+            // Direct messages from the Master window that opened this one
+            window.addEventListener('message', (event) => {
+                if (event.data && event.data.type === 'SYNC_STATE') {
+                    updateCleanDOM(event.data.state);
+                }
+            });
+
             // Request initial state from any active Master window
             airtimeChannel.postMessage({ type: 'REQUEST_STATE' });
+            if (window.opener) {
+                window.opener.postMessage({ type: 'REQUEST_STATE' }, '*');
+            }
         } else {
             // Master Window listener to respond to client/clean-feed state requests
             airtimeChannel.onmessage = (event) => {
@@ -1035,6 +906,11 @@
                     airtimeChannel.postMessage({ type: 'SYNC_STATE', state: window.broadcastState });
                 }
             };
+            window.addEventListener('message', (event) => {
+                if (event.data && event.data.type === 'REQUEST_STATE' && event.source) {
+                    event.source.postMessage({ type: 'SYNC_STATE', state: window.broadcastState }, '*');
+                }
+            });
         }
 
         // Initialize Clock Ticks
@@ -1061,11 +937,10 @@
             }
         }
 
-        // Clock Update
-        function updateClock() {
+        // Analog hands: driven by requestAnimationFrame (no CSS transitions) so the
+        // second hand sweeps smoothly and never spins backwards at 59s -> 0s.
+        function updateAnalog() {
             const now = new Date();
-            
-            // Analog
             const seconds = now.getSeconds() + now.getMilliseconds() / 1000;
             const minutes = now.getMinutes() + seconds / 60;
             const hours = (now.getHours() % 12) + minutes / 60;
@@ -1077,6 +952,16 @@
             secondHand.style.transform = `rotate(${sDeg}deg)`;
             minuteHand.style.transform = `rotate(${mDeg}deg)`;
             hourHand.style.transform = `rotate(${hDeg}deg)`;
+        }
+
+        function analogLoop() {
+            updateAnalog();
+            requestAnimationFrame(analogLoop);
+        }
+
+        // Clock Update
+        function updateClock() {
+            const now = new Date();
 
             // Digital
             const h = String(now.getHours()).padStart(2, '0');
@@ -1093,10 +978,16 @@
             
             if (h > 0) {
                 countdownTimer.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-                countdownTimer.style.fontSize = 'clamp(50px, 20vmin, 200px)'; // Slightly smaller font if hours are present
             } else {
                 countdownTimer.textContent = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-                countdownTimer.style.fontSize = 'clamp(60px, 25vmin, 300px)';
+            }
+
+            if (isCountdownOnly) {
+                // Fill the screen: size limited by width (digit count) and height
+                countdownTimer.style.setProperty('font-size', h > 0 ? 'min(19vw, 55vh)' : 'min(31vw, 65vh)', 'important');
+            } else {
+                // Slightly smaller font if hours are present
+                countdownTimer.style.setProperty('font-size', h > 0 ? 'clamp(50px, 20vmin, 200px)' : 'clamp(60px, 25vmin, 300px)');
             }
             
             // Percentage-based Color Sync Logic
@@ -1266,17 +1157,28 @@
             updateBroadcastState();
         }
 
+        function toggleCountdownOnly() {
+            isCountdownOnly = !isCountdownOnly;
+            document.body.classList.toggle('countdown-only', isCountdownOnly);
+            countdownOnlyToggle.classList.toggle('alpha-active', isCountdownOnly);
+            updateTimerDisplay();
+            updateBroadcastState();
+        }
+
         function toggleCleanFeed() {
             if (isCleanMode) return;
 
             if (!cleanFeedWindow || cleanFeedWindow.closed) {
-                const apiKey = localStorage.getItem('firebase_api_key') || '';
-                const projectId = localStorage.getItem('firebase_project_id') || '';
-                let url = window.location.origin + window.location.pathname + '?mode=clean';
-                if (apiKey && projectId) {
-                    url += `&apiKey=${encodeURIComponent(apiKey)}&projectId=${encodeURIComponent(projectId)}`;
+                // Build the feed from this page's own source instead of a URL,
+                // so it works from a local file, a hosted page or an embedded preview
+                const feedHtml = PAGE_SOURCE.replace('<head>', '<head><script>window.__AIRTIME_CLEAN__ = true;<\/script>');
+                const feedUrl = URL.createObjectURL(new Blob([feedHtml], { type: 'text/html' }));
+                cleanFeedWindow = window.open(feedUrl, 'CleanFeed', 'menubar=no,toolbar=no,location=no,status=no,width=1920,height=1080');
+                setTimeout(() => URL.revokeObjectURL(feedUrl), 10000);
+                if (!cleanFeedWindow) {
+                    alert('The Clean Feed window was blocked. Please allow pop-ups for this page and try again.');
+                    return;
                 }
-                cleanFeedWindow = window.open(url, 'CleanFeed', 'menubar=no,toolbar=no,location=no,status=no,width=1920,height=1080');
                 cleanFeedToggle.classList.add('alpha-active');
                 
                 // Monitor for manual close
@@ -1400,46 +1302,17 @@
         soundToggle.addEventListener('click', toggleSound);
         countdownVisibilityToggle.addEventListener('click', toggleCountdownVisibility);
         progressBarToggle.addEventListener('click', toggleProgressBar);
+        countdownOnlyToggle.addEventListener('click', toggleCountdownOnly);
         cleanFeedToggle.addEventListener('click', toggleCleanFeed);
         startPauseBtn.addEventListener('click', toggleTimer);
         resetBtn.addEventListener('click', resetTimer);
 
-        // Collapsible Cloud Sync Section Toggle
-        const syncCollapseHeader = document.getElementById('sync-collapse-header');
-        const syncCollapseContent = document.getElementById('sync-collapse-content');
-        const syncCollapseIcon = document.getElementById('sync-collapse-icon');
-
-        syncCollapseHeader.addEventListener('click', () => {
-            const isCollapsed = syncCollapseContent.classList.toggle('collapsed');
-            syncCollapseIcon.textContent = isCollapsed ? '▼' : '▲';
-        });
-
-        // Firebase Credentials Handling
-        const firebaseApiKeyInput = document.getElementById('firebase-api-key');
-        const firebaseProjectIdInput = document.getElementById('firebase-project-id');
-        const saveFirebaseBtn = document.getElementById('save-firebase-btn');
-
-        if (firebaseApiKeyInput && firebaseProjectIdInput) {
-            firebaseApiKeyInput.value = localStorage.getItem('firebase_api_key') || '';
-            firebaseProjectIdInput.value = localStorage.getItem('firebase_project_id') || '';
-        }
-
-        saveFirebaseBtn.addEventListener('click', () => {
-            const key = firebaseApiKeyInput.value.trim();
-            const projId = firebaseProjectIdInput.value.trim();
-
-            localStorage.setItem('firebase_api_key', key);
-            localStorage.setItem('firebase_project_id', projId);
-
-            initFirebase();
-        });
-
         // Init
         initTicks();
-        setInterval(updateClock, 50); 
+        setInterval(updateClock, 200);
         updateTimerDisplay();
         updateClock();
-        initFirebase();
+        analogLoop();
     </script>
 </body>
 </html>
