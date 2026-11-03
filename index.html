@@ -661,7 +661,7 @@
     <div id="feed-hint" class="hidden">
         <div><strong>Count On Time clean feed</strong></div>
         <div>Click here once: full screen on the other display (LED wall, projector, confidence monitor).</div>
-        <div>F = full screen on / off. The controls stay in the main window; E there closes this window.</div>
+        <div>F = full screen on / off. E = close this window. The controls stay in the main window.</div>
         <div class="problem hidden" id="feed-problem"></div>
     </div>
 
@@ -1343,8 +1343,11 @@
         window.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT') return;
             if (isCleanMode) {
-                // The clean feed only shows the output: F = full screen on / off.
-                if (e.key.toLowerCase() === 'f') feedFullScreen();
+                // The clean feed only shows the output: F = full screen on / off,
+                // E = close it (also from here, where the focus usually is).
+                const k = e.key.toLowerCase();
+                if (k === 'f') feedFullScreen();
+                if (k === 'e') window.close();
                 return;
             }
 
