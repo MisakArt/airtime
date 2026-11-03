@@ -494,6 +494,26 @@
             transition: opacity 0.3s;
         }
 
+        /* Clean feed: bar in the main window while the output window is open */
+        #feed-bar {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+            display: flex; align-items: center; gap: 1rem; justify-content: center;
+            padding: 0.45rem 1rem; background: #0b5d3b; color: #e8fff2;
+            font-family: 'Inter', sans-serif; font-size: 0.9rem;
+        }
+        #feed-bar button {
+            background: transparent; color: #7dffb8; border: 1px solid #7dffb8; border-radius: 6px;
+            padding: 0.25rem 0.8rem; font: inherit; cursor: pointer;
+        }
+        #feed-bar button:hover { background: rgba(125,255,184,0.15); }
+        /* Clean feed window: "click for full screen" note until the first click */
+        #feed-hint {
+            position: fixed; top: 1.5rem; left: 50%; transform: translateX(-50%); z-index: 1000;
+            max-width: 46rem; padding: 0.9rem 1.3rem; border-radius: 12px; text-align: center;
+            background: rgba(42,44,48,0.92); border: 1px solid rgba(138,144,153,0.4); color: #e2e0dc;
+            font-family: 'Inter', sans-serif; font-size: 0.95rem; line-height: 1.45; cursor: pointer;
+        }
+        #feed-hint .problem { color: #ffb020; margin-top: 0.5rem; }
         .shortcuts-hint .credit {
             margin-top: 0.6rem;
         }
@@ -627,11 +647,22 @@
 
         <div class="shortcuts-hint">
             <div><strong>Shortcuts:</strong></div>
-            <div>Space: Start/Pause | R: Reset | H: Menu | C: Timer</div>
+            <div>Space: Start/Pause | R: Reset | H: Menu | C: Timer | E: Clean feed on/off</div>
             <div>Presets: 1, 3, 5, 10 (T), 15 (F)</div>
             <div>Adjust: ] or P (+1m) | [ or O (-1m)</div>
             <div class="credit">Count On Time by Misak Nalbandian &copy; 2026</div>
         </div>
+    </div>
+
+    <div id="feed-bar" class="hidden">
+        <span>Clean feed window open: it shows the output, this window keeps the controls.</span>
+        <button type="button" id="feed-close-btn">Close output (E)</button>
+    </div>
+    <div id="feed-hint" class="hidden">
+        <div><strong>Count On Time clean feed</strong></div>
+        <div>Click here once: full screen on the other display (LED wall, projector, confidence monitor).</div>
+        <div>F = full screen on / off. The controls stay in the main window; E there closes this window.</div>
+        <div class="problem hidden" id="feed-problem"></div>
     </div>
 
     <div id="app">
@@ -1144,7 +1175,43 @@
             updateBroadcastState();
         }
 
-        function toggleCleanFeed() {
+        // ---- Clean feed window on the extended display ----
+        const feedBar = document.getElementById('feed-bar');
+        const feedCloseBtn = document.getElementById('feed-close-btn');
+        const feedHint = document.getElementById('feed-hint');
+        const feedProblem = document.getElementById('feed-problem');
+
+        function setFeedOpen(open) {
+            cleanFeedToggle.classList.toggle('alpha-active', open);
+            feedBar.classList.toggle('hidden', !open);
+        }
+
+        // Screens other than the one holding the main window, via the Window
+        // Management API (Chrome / Edge, asks once). Null when not available.
+        async function screenAwayFrom(x, y) {
+            if (!('getScreenDetails' in window)) return { screen: null, problem: 'This browser cannot reach other displays (Chrome or Edge can). Drag this window there and press F.' };
+            try {
+                const details = await window.getScreenDetails();
+                const screens = details.screens;
+                if (screens.length < 2) return { screen: null, problem: 'Only one display found. Extend the desktop (Windows: Win+P → Extend), then click here again.' };
+                let main = null;
+                if (typeof x === 'number' && typeof y === 'number') {
+                    for (const s of screens) {
+                        if (x + 20 >= s.left && x + 20 < s.left + s.width && y + 20 >= s.top && y + 20 < s.top + s.height) main = s;
+                    }
+                }
+                if (!main) main = screens.find(s => s.isPrimary) || null;
+                return { screen: screens.find(s => s !== main) || null, problem: null };
+            } catch (e) {
+                let state = 'unknown';
+                try { state = (await navigator.permissions.query({ name: 'window-management' })).state; } catch (_) {}
+                return { screen: null, problem: state === 'denied'
+                    ? 'Window management is blocked for this site. Allow it: icon left of the address → Site settings → Window management → Allow, then click here again.'
+                    : 'The browser did not give access to the other displays (' + (e && e.name ? e.name : e) + ', permission: ' + state + '). Allow "Window management" for this site, then click here again.' };
+            }
+        }
+
+        async function toggleCleanFeed() {
             if (isCleanMode) return;
 
             if (!cleanFeedWindow || cleanFeedWindow.closed) {
@@ -1152,27 +1219,70 @@
                 // so it works from a local file, a hosted page or an embedded preview
                 const feedHtml = PAGE_SOURCE.replace('<head>', '<head><script>window.__AIRTIME_CLEAN__ = true;<\/script>');
                 const feedUrl = URL.createObjectURL(new Blob([feedHtml], { type: 'text/html' }));
-                cleanFeedWindow = window.open(feedUrl, 'CleanFeed', 'menubar=no,toolbar=no,location=no,status=no,width=1920,height=1080');
+                // On the extended display when the browser allows it.
+                let features = 'popup,width=1280,height=720';
+                const away = await screenAwayFrom(window.screenX, window.screenY);
+                if (away.screen) {
+                    const s = away.screen;
+                    features = 'popup,left=' + s.availLeft + ',top=' + s.availTop + ',width=' + s.availWidth + ',height=' + s.availHeight + ',fullscreen';
+                }
+                cleanFeedWindow = window.open(feedUrl, 'CleanFeed', features);
                 setTimeout(() => URL.revokeObjectURL(feedUrl), 10000);
                 if (!cleanFeedWindow) {
                     alert('The Clean Feed window was blocked. Please allow pop-ups for this page and try again.');
                     return;
                 }
-                cleanFeedToggle.classList.add('alpha-active');
-                
+                setFeedOpen(true);
+
                 // Monitor for manual close
                 const closeCheckInterval = setInterval(() => {
                     if (cleanFeedWindow && cleanFeedWindow.closed) {
                         clearInterval(closeCheckInterval);
-                        cleanFeedToggle.classList.remove('alpha-active');
+                        setFeedOpen(false);
                         cleanFeedWindow = null;
                     }
                 }, 1000);
             } else {
                 cleanFeedWindow.close();
                 cleanFeedWindow = null;
-                cleanFeedToggle.classList.remove('alpha-active');
+                setFeedOpen(false);
             }
+        }
+
+        // Clean feed window: full screen on the display away from the main window.
+        async function feedFullScreen() {
+            if (document.fullscreenElement) {
+                try { await document.exitFullscreen(); } catch (_) {}
+                return;
+            }
+            let x, y;
+            try { if (window.opener) { x = window.opener.screenX; y = window.opener.screenY; } } catch (_) {}
+            const away = await screenAwayFrom(x, y);
+            let problem = away.problem;
+            try {
+                await document.documentElement.requestFullscreen(away.screen ? { screen: away.screen } : {});
+            } catch (e) {
+                problem = 'The browser refused full screen (' + (e && e.name ? e.name : e) + '). Click here once more.';
+            }
+            feedProblem.textContent = problem || '';
+            feedProblem.classList.toggle('hidden', !problem);
+            feedHint.classList.toggle('hidden', !problem);
+        }
+
+        if (isCleanMode) {
+            feedHint.classList.remove('hidden');
+            document.addEventListener('pointerdown', () => {
+                if (!feedHint.classList.contains('hidden')) feedFullScreen();
+            });
+            // Closing the main window closes the feed too.
+            const openerCheck = setInterval(() => {
+                if (!window.opener || window.opener.closed) {
+                    clearInterval(openerCheck);
+                    window.close();
+                }
+            }, 2000);
+        } else {
+            feedCloseBtn.addEventListener('click', () => { if (cleanFeedWindow && !cleanFeedWindow.closed) toggleCleanFeed(); });
         }
 
         // Web Audio Logic
@@ -1232,6 +1342,11 @@
         // Keyboard Shortcuts
         window.addEventListener('keydown', (e) => {
             if (e.target.tagName === 'INPUT') return;
+            if (isCleanMode) {
+                // The clean feed only shows the output: F = full screen on / off.
+                if (e.key.toLowerCase() === 'f') feedFullScreen();
+                return;
+            }
 
             switch(e.key.toLowerCase()) {
                 case ' ':
@@ -1269,6 +1384,9 @@
                     break;
                 case 'h':
                     toggleSettings();
+                    break;
+                case 'e':
+                    toggleCleanFeed();
                     break;
             }
         });
